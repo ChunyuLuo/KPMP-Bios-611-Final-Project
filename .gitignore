@@ -47,3 +47,16 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# macOS system files
+.DS_Store
+
+# Project output files
+*.pdf
+*.html
+*.rds
+
+# Temporary files
+*.log
+*.aux
+*.toc
