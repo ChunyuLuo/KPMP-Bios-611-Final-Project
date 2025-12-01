@@ -34,13 +34,30 @@ Log in using:
 
 All project files will be available inside RStudio under /home/rstudio/project.
 This provides a fully reproducible R environment for running the analysis and generating the report.
+The container must remain running while generating the report.
+
 
 ## 3. How to Build the Report
-```markdown
-This project is organized using a Makefile to ensure fully reproducible execution.
-```
 
-## Generate the final report (PDF):
+This project uses a Makefile to ensure fully reproducible execution.
+
+### Generate the final report:
 ```bash
 make report.pdf
 ```
+
+This command will:
+1. Load the pre-processed slide-level mean embeddings
+2. Perform PCA and UMAP dimensionality reduction
+3. Run KMeans clustering (K=10) to identify tissue phenotypes
+4. Generate all figures and tables
+5. Compile `report/report.Rmd` → `report/report.pdf`
+
+### Clean all generated files:
+```bash
+make clean
+```
+
+The Makefile tracks dependencies automatically—the report rebuilds only when data or code changes.
+
+**Note**: The Docker container must be running during report generation.
