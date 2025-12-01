@@ -25,7 +25,7 @@ docker run -e PASSWORD=1234 -p 8787:8787 \
     -v $(pwd):/home/rstudio/project virchow2-kmeans
 ```
 After the container starts, open a browser and navigate to:
-```code
+```
 http://localhost:8787
 ```
 Log in using:
