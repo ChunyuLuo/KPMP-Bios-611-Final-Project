@@ -1,16 +1,26 @@
 # KPMP Bios 611 Final Project
 
+# KPMP Bios 611 Final Project
+
 ## 1. Project Description
 
-This project begins with a pre-processed dataset derived from Kidney Precision Medicine Project (KPMP) whole-slide images. Prior preprocessing steps (performed outside of this project) included:
-- extracting 224x224 patches from each slide,
-- generating 2560-dimensional Virchow2 embeddings for every patch, and
-- applying per-slide KMeans clustering (K = 10) to group patches into tissue regions.
+This project analyzes pre-processed tissue embeddings derived from the Kidney Precision Medicine Project (KPMP) whole-slide images.  
+Upstream preprocessing (performed outside this project) included:
 
-For each slide-level cluster, the mean Virchow2 embedding was computed.
+- extracting 224×224 patches from each slide,
+- generating 2560-dimensional Virchow2 embeddings for every patch,
+- grouping patches into slide-level tissue regions using per-slide KMeans clustering (K = 10),
+- computing the **mean Virchow2 embedding** for each slide-level cluster.
+
 Across 139 slides with detectable tissue, this resulted in **1339 valid slide-level mean embeddings**, which serve as the input dataset for the present analysis.
 
-**In this project**, we analyze these 1339 mean embeddings using PCA and UMAP to explore global structure across slides. We then perform a second-stage KMeans clustering (K = 10) to identify cohort-level tissue phenotypes. Finally, we link these global tissue phenotypes to participant-level clinical variables and examine how tissue composition varies across clinical groups.
+**In this project:**
+
+- We analyze these 1339 mean embeddings using PCA and UMAP to explore global structure.  
+- We perform a second-stage **global KMeans clustering (K = 10)** on the UMAP space to identify cohort-level tissue phenotypes.
+- Finally, we link these global tissue phenotypes to participant-level clinical variables and examine how tissue composition varies across clinical groups.
+
+The dataset used in this project is located at: `data/virchow2_cluster_means_k10_allslides.csv`.
 
 ## 2. How to Build and Run the Container
 This repository includes a `Dockerfile` that installs all required R packages and provides a reproducible R environment with RStudio Server.
@@ -61,3 +71,4 @@ make clean
 The Makefile tracks dependencies automatically—the report rebuilds only when data or code changes.
 
 **Note**: The Docker container must be running during report generation.
+Developers should note that the entire workflow is organized through the Makefile, which manages dependencies and ensures reproducibility.

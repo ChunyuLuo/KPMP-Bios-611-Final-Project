@@ -1,0 +1,486 @@
+---
+title: 'KPMP Virchow2 Embeddings: PCA, UMAP, and Clinical Enrichment'
+author: "Chunyu Luo"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 7,
+  fig.height = 5
+)
+
+library(tidyverse)
+library(cluster)
+library(umap)
+```
+
+## Introduction
+
+The goal of this project is to explore whether Virchow2-derived mean embeddings from KPMP kidney biopsy whole-slide images capture biologically and clinically meaningful structure.
+
+Specifically, we:
+
+- Perform principal component analysis (PCA) to understand the variance structure of the embedding space.
+- Apply UMAP for nonlinear dimensionality reduction and visualize global structure.
+- Cluster samples in UMAP space using K-means (with $K = 10$) to obtain global clusters.
+- Link image-derived clusters to clinical metadata, including:
+  - Enrollment Category (AKI, CKD, DM-R, Healthy Reference)
+  - Primary Adjudicated Category (e.g., DKD, ATI, etc.)
+- Summarize how these clinical labels are distributed across global clusters.
+
+This report documents the full pipeline and presents the main visualizations and findings.
+
+## Data Description
+
+The primary dataset contains cluster-level Virchow2 mean embeddings derived from KPMP whole-slide images.
+
+Specifically, it includes:
+
+- File: `data/virchow2_cluster_means_k10_allslides.csv`
+- Each row represents a slide-level cluster (K = 10 per slide).
+- Variables in the dataset include:
+  - `slide_id`: unique slide identifier
+  - `cluster_id`: per-slide K = 10 cluster label
+  - Embedding feature columns beginning with `f` (e.g., `f1`, `f2`, ...)
+
+Additional metadata files include:
+
+- Clinical data:
+  - `data/20250606_OpenAccessClinicalData_Recategorized.csv`
+- Slide-to-participant mapping:
+  - `data/20251122slides_kpmp_all_with_participant.csv`
+
+```{r data-load}
+set.seed(42)
+
+input_path  <- "data/virchow2_cluster_means_k10_allslides.csv"
+output_path <- "data/virchow2_kmeans10_allslides_with_umap.csv"
+
+fig_dir <- "report/figures"
+if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
+
+df_mean <- readr::read_csv(input_path)
+
+glue::glue("Number of rows: {nrow(df_mean)}, number of columns: {ncol(df_mean)}")
+head(df_mean)
+```
+We treat all columns prefixed by ``f'' as embedding features.
+
+```{r}
+feature_cols <- grep("^f", names(df_mean), value = TRUE)
+length(feature_cols)
+head(feature_cols)
+```
+
+## Methods
+
+### PCA on Virchow2 Mean Embeddings
+
+We standardize each feature to have mean 0 and variance 1, and then perform principal component analysis (PCA) on the resulting feature matrix.
+
+```{r}
+X <- as.matrix(df_mean[, feature_cols])
+
+# Standardization
+X_scaled <- scale(X)
+
+# Use up to 50 PCs
+n_pca <- min(50, ncol(X_scaled))
+pca_res <- prcomp(X_scaled, center = FALSE, scale. = FALSE, rank. = n_pca)
+
+Xpca <- pca_res$x
+
+# variance explained
+var_explained <- (pca_res$sdev)^2
+var_explained <- var_explained / sum(var_explained)
+
+df_scree <- tibble(
+  PC = seq_along(var_explained),
+  variance = var_explained
+)
+```
+
+### Scree Plot
+```{r}
+p_scree <- ggplot(df_scree %>% slice(1:50),
+                  aes(x = PC, y = variance)) +
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(
+    title = "Scree Plot of PCA (Virchow2 Mean Embeddings)",
+    x = "Principal Component",
+    y = "Proportion of Variance Explained"
+  )
+
+p_scree
+
+ggsave(file.path(fig_dir, "pca_scree.pdf"), p_scree, width = 6, height = 4)
+```
+
+The scree plot shows that variance is spread across many components, with no single principal component dominating. This suggests that the embedding space is high-dimensional and heterogeneous, which motivates the use of a nonlinear method such as UMAP for visualization.
+
+### UMAP and Global K-means Clustering
+We apply UMAP to the PCA scores (using up to 50 principal components) and then perform K-means clustering (with $K = 10$) on the resulting two-dimensional UMAP space.
+
+```{r}
+umap_config <- umap::umap.defaults
+umap_config$n_neighbors <- 15
+umap_config$min_dist    <- 0.1
+umap_config$metric      <- "euclidean"
+
+umap_res <- umap::umap(Xpca, config = umap_config)
+
+df_mean$UMAP1 <- umap_res$layout[, 1]
+df_mean$UMAP2 <- umap_res$layout[, 2]
+
+# Preserve original slide-level cluster if present
+if ("cluster_id" %in% names(df_mean)) {
+  df_mean$cluster_id <- factor(df_mean$cluster_id)
+}
+```
+
+### UMAP Colored by Per-slide Cluster ID
+```{r}
+
+p_umap_orig <- ggplot(df_mean,
+                      aes(x = UMAP1, y = UMAP2, color = cluster_id)) +
+  geom_point(alpha = 0.8, size = 1.8) +
+  labs(
+    title = "UMAP of Virchow2 Mean Embeddings\nColored by Slide-level Cluster",
+    color = "Slide cluster"
+    ) +
+  theme_minimal()
+  
+p_umap_orig
+  
+ggsave(file.path(fig_dir, "umap_by_slide_cluster.pdf"),
+       p_umap_orig, width = 7, height = 6)
+```
+
+### Global K-means (K = 10) on UMAP Space
+```{r}
+set.seed(42)
+km_res <- kmeans(df_mean[, c("UMAP1", "UMAP2")], centers = 10, nstart = 10)
+df_mean$global_k10 <- factor(km_res$cluster)
+```
+
+```{r}
+p_umap_global <- ggplot(df_mean,
+                        aes(x = UMAP1, y = UMAP2, color = global_k10)) +
+  geom_point(alpha = 0.8, size = 1.8) +
+  labs(
+    title = "UMAP of Virchow2 Mean Embeddings\nColored by Global KMeans (K=10)",
+    color = "Global K=10"
+  ) +
+  theme_minimal()
+
+p_umap_global
+
+ggsave(file.path(fig_dir, "umap_by_global_k10.pdf"),
+       p_umap_global, width = 7, height = 6)
+```
+
+The global K-means clusters form several well-separated “islands” in UMAP space, while the original per-slide cluster IDs overlap more strongly. This suggests global structure that is not fully captured by per-slide clustering alone.
+
+## Linking to Clinical Data
+### Clinical Data and Slide Mapping
+```{r}
+# Clinical data
+clinical <- readr::read_csv("data/20250606_OpenAccessClinicalData_Recategorized.csv") %>%
+  mutate(`Participant ID` = as.character(`Participant ID`))
+
+# Special handling for 28-12265-XY02 / XY03
+row_28 <- clinical %>% 
+  filter(`Participant ID` == "28-12265")
+
+row_xy02 <- row_28 %>%
+  mutate(`Participant ID` = "28-12265-XY02")
+
+row_xy03 <- row_28 %>%
+  mutate(`Participant ID` = "28-12265-XY03")
+
+clinical_expanded <- bind_rows(clinical, row_xy02, row_xy03)
+
+# Slide-to-participant mapping
+map_path <- "data/20251122slides_kpmp_all_with_participant.csv"
+df_map   <- readr::read_csv(map_path)
+
+# Join embeddings with mapping
+df_umap <- df_mean %>%
+  left_join(df_map %>% select(slide_id, participant_id, source),
+            by = "slide_id") %>%
+  mutate(
+    participant_id = as.character(participant_id),
+    `Participant ID` = participant_id %>%
+      stringr::str_replace("^participant_", "")
+  )
+
+# Join with clinical
+df_umap_clinical <- df_umap %>%
+  left_join(clinical_expanded, by = "Participant ID")
+```
+
+### Diagnostics
+```{r}
+cat("\n=== DIAGNOSTIC: Sample counts at each stage ===\n")
+cat("Original df_mean samples:", nrow(df_mean), "\n")
+cat("After joining with map:", nrow(df_umap), "\n")
+cat("After joining with clinical:", nrow(df_umap_clinical), "\n")
+
+cat("\n=== Samples per global cluster (before filtering) ===\n")
+print(table(df_umap_clinical$global_k10, useNA = "always"))
+
+cat("\n=== Missing Enrollment Category by global cluster ===\n")
+missing_by_cluster <- df_umap_clinical %>%
+  group_by(global_k10) %>%
+  summarise(
+    total = n(),
+    missing_category = sum(is.na(`Enrollment Category`)),
+    percent_missing = round(missing_category / total * 100, 1),
+    .groups = "drop"
+  ) %>%
+  arrange(global_k10)
+
+missing_by_cluster
+```
+
+## Enrollment Category by Global Cluster
+We first focus on Enrollment Category (AKI, CKD, DM-R, Healthy Reference).
+```{r}
+cluster_col <- "global_k10"          
+cat_col     <- "Enrollment Category" 
+
+df_plot <- df_umap_clinical %>%
+  filter(!is.na(.data[[cluster_col]]),
+         !is.na(.data[[cat_col]])) %>%
+  mutate(
+    !!cluster_col := factor(.data[[cluster_col]]),
+    !!cat_col := factor(.data[[cat_col]],
+                        levels = c("AKI", "CKD", "DM-R", "Healthy Reference"))
+  )
+
+cat("\n=== Samples per cluster (after filtering) ===\n")
+print(table(df_plot$global_k10))
+
+cat("\n=== Sample loss by cluster ===\n")
+loss_summary <- missing_by_cluster %>%
+  left_join(
+    df_plot %>% count(global_k10) %>% rename(after_filter = n),
+    by = "global_k10"
+  ) %>%
+  mutate(
+    after_filter = replace_na(after_filter, 0),
+    samples_lost = total - after_filter,
+    percent_lost = round(samples_lost / total * 100, 1)
+  )
+loss_summary
+```
+
+### Cluster-wise Enrollment Distribution
+```{r}
+ct <- table(df_plot[[cluster_col]], df_plot[[cat_col]])
+row_totals <- rowSums(ct)
+ct <- ct[row_totals > 0, , drop = FALSE]
+
+# Check for clusters with zero counts after filtering
+all_clusters <- levels(df_plot[[cluster_col]])
+present_clusters <- rownames(ct)
+missing_clusters <- setdiff(all_clusters, present_clusters)
+if (length(missing_clusters) > 0) {
+  cat("\n=== WARNING: These clusters have NO data after filtering ===\n")
+  print(missing_clusters)
+}
+
+prop <- prop.table(ct, margin = 1) * 100
+df_prop <- as.data.frame(prop)
+names(df_prop) <- c("cluster", "category", "percent")
+df_prop$cluster <- factor(df_prop$cluster, levels = as.character(1:10))
+
+head(df_prop)
+```
+```{r}
+color_map <- c(
+  "AKI"               = "#1f77b4",
+  "CKD"               = "#d62728",
+  "DM-R"              = "#ff7f0e",
+  "Healthy Reference" = "#17becf"
+)
+
+p_enroll <- ggplot(df_prop, aes(x = cluster, y = percent, fill = category)) +
+  geom_col(position = "stack", width = 0.8) +
+  scale_fill_manual(values = color_map) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    title = "Enrollment Category Distribution by Global Cluster (Percentage)",
+    x = "Global Cluster (K=10)",
+    y = "Percentage (%)",
+    fill = "Enrollment Category"
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  theme_minimal()
+
+p_enroll
+
+ggsave(file.path(fig_dir, "enrollment_by_cluster_percent.pdf"),
+       p_enroll, width = 8, height = 5)
+```
+
+```{r}
+ct_df   <- as.data.frame.matrix(ct)     
+prop_df <- as.data.frame.matrix(prop)  
+
+combined <- ct_df
+for (col in colnames(ct_df)) {
+  combined[[col]] <- sprintf(
+    "%d (%.2f%%)",
+    ct_df[[col]],
+    prop_df[[col]]
+  )
+}
+
+combined <- tibble::rownames_to_column(combined, var = "cluster")
+
+readr::write_csv(
+  combined,
+  "data/virchow2_cluster_enrollment_category_count_percent.csv"
+)
+
+combined
+```
+
+## Primary Adjudicated Category by Global Cluster
+We next examine the distribution of Primary Adjudicated Category within each global cluster.
+```{r}
+cat_col2 <- "Primary Adjudicated Category"
+
+df_plot2 <- df_umap_clinical %>%
+  filter(!is.na(.data[[cluster_col]]),
+         !is.na(.data[[cat_col2]])) %>%
+  mutate(
+    !!cluster_col := factor(.data[[cluster_col]]),
+    !!cat_col2 := factor(.data[[cat_col2]])
+  )
+
+cat_order <- sort(unique(df_plot2[[cat_col2]]))
+
+ct2 <- table(df_plot2[[cluster_col]], df_plot2[[cat_col2]])
+row_totals2 <- rowSums(ct2)
+ct2 <- ct2[row_totals2 > 0, , drop = FALSE]
+
+all_clusters <- as.character(1:10)
+present_clusters <- rownames(ct2)
+missing_clusters <- setdiff(all_clusters, present_clusters)
+if (length(missing_clusters) > 0) {
+  cat("\n=== WARNING: These clusters have NO data after filtering (adjudicated) ===\n")
+  print(missing_clusters)
+}
+
+prop2 <- prop.table(ct2, margin = 1) * 100
+df_prop2 <- as.data.frame(prop2)
+names(df_prop2) <- c("cluster", "category", "percent")
+df_prop2$cluster <- factor(df_prop2$cluster, levels = as.character(1:10))
+
+head(df_prop2)
+```
+
+```{r}
+n_categories <- length(unique(df_prop2$category))
+fig_width <- if (n_categories > 10) 10 else 8
+
+p_adjud <- ggplot(df_prop2, aes(x = cluster, y = percent, fill = category)) +
+  geom_col(position = "stack", width = 0.8) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    title = "Primary Adjudicated Category Distribution by Global Cluster (Percentage)",
+    x = "Global Cluster (K=10)",
+    y = "Percentage (%)",
+    fill = "Primary Adjudicated Category"
+  ) +
+  coord_cartesian(ylim = c(0, 100)) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 10),
+    legend.text  = element_text(size = 8),
+    legend.key.size = grid::unit(0.4, "cm")
+  )
+
+p_adjud
+
+ggsave(file.path(fig_dir, "primary_adjudicated_by_cluster_percent.pdf"),
+       p_adjud, width = fig_width, height = 5)
+```
+
+```{r}
+ct2_df   <- as.data.frame.matrix(ct2)     
+prop2_df <- as.data.frame.matrix(prop2)  
+
+combined2 <- ct2_df
+for (col in colnames(ct2_df)) {
+  combined2[[col]] <- sprintf(
+    "%d (%.2f%%)",
+    ct2_df[[col]],
+    prop2_df[[col]]
+  )
+}
+
+combined2 <- tibble::rownames_to_column(combined2, var = "cluster")
+
+readr::write_csv(
+  combined2,
+  "data/virchow2_cluster_primary_adjudicated_count_percent.csv"
+)
+
+combined2
+```
+
+## Discussion and Conclusions
+
+### Summary
+
+- **High-dimensional structure:**  
+  PCA indicates that variance is spread across many components, with no single principal component explaining a dominant proportion of variance.  
+  This suggests that Virchow2 mean embeddings capture rich, multi-dimensional variation.
+
+- **UMAP + global clustering:**  
+  UMAP reveals several well-separated “islands” in the two-dimensional embedding space.  
+  Global K-means clusters (K = 10) correspond to these islands, whereas per-slide cluster IDs show more overlap.  
+  This implies that a global clustering in embedding space may better capture shared biological patterns across participants and slides.
+
+- **Enrollment Category enrichment:**  
+  The stacked bar plots show that some global clusters are enriched for specific Enrollment Categories  
+  (e.g., AKI-dominated clusters, CKD/DM-R–enriched clusters, clusters with a higher fraction of Healthy Reference participants),  
+  while others are more mixed.  
+  This non-random distribution suggests that the image-derived embeddings are associated with clinical phenotypes at enrollment.
+
+- **Primary Adjudicated Category enrichment:**  
+  Several clusters also show strong enrichment for particular kidney injury patterns  
+  (e.g., diabetic kidney disease, acute tubular injury),  
+  while others are heterogeneous or labeled as “cannot be determined.”  
+  These patterns provide additional evidence that clusters in the embedding space may reflect underlying pathology.
+
+Overall, the analysis supports the idea that Virchow2 mean embeddings capture clinically relevant information and that a global view of the embedding space (via UMAP and K-means) can highlight biologically interpretable clusters.
+
+---
+
+## Limitations
+
+- We used simple mean embeddings per slide-level cluster, which ignore finer spatial structure within slides.
+- No explicit batch correction or site-effect adjustment was applied; some clusters may partially reflect technical variation.
+- The number of clusters (K = 10) was chosen heuristically and not optimized using an objective criterion (e.g., gap statistic or silhouette).
+
+---
+
+## Future Directions
+
+- Compare Virchow2 embeddings to alternative encoders (e.g., UNI, HIPT, ViT) and evaluate robustness of cluster–phenotype associations.
+- Move beyond mean embeddings to spatially aware features (e.g., region-level statistics, neighborhood graphs).
+- Apply formal predictive modeling to test whether embeddings can predict adjudicated diagnosis or progression outcomes.
+- Incorporate batch-correction or harmonization methods to separate biological from technical variation.
+- Investigate representative patches from each global cluster to better understand the histologic patterns that drive each embedding cluster.
