@@ -1,7 +1,5 @@
 # KPMP Bios 611 Final Project
 
-# KPMP Bios 611 Final Project
-
 ## 1. Project Description
 
 This project analyzes pre-processed tissue embeddings derived from the Kidney Precision Medicine Project (KPMP) whole-slide images.  
